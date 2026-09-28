@@ -61,10 +61,16 @@ git remote set-url origin https://git@git.overleaf.com/1234567
 
 ```bash
 git pull origin main        # get what coauthors wrote in the editor
-# ... regenerate tables/figures, edit your own files ...
-git add -A && git commit -m "update tables from the build"
+# ... regenerate tables/figures, copy them into the clone ...
+git add tables/tab_main.tex figures/fig_1.pdf     # name the files; never `git add -A` in a shared project
+git status --short                               # only the files you meant, nothing else
+git commit -m "update tables from the build"
 git push origin main
 ```
+
+Name the files you stage. `git add -A` in a clone of a shared project also picks up stray edits, editor
+backups and files a pull brought in, and a push of a coauthor's `.tex` can cost them their comments. See
+**Pushing safely** below for the full checklist.
 
 **Commits are created just in time.** While people type in the Overleaf editor no git commits exist. One is
 synthesized when you `pull` or `fetch`; your `push` creates one too. So a pull may produce a single large commit
@@ -105,6 +111,44 @@ because Overleaf merges edits character by character the way a real-time editor 
 This yields a one-way rule that works well for a paper backed by a code pipeline: **generated files flow
 code → Overleaf and are never edited there; prose flows Overleaf → your backup copy and is never pushed.**
 `scripts/sync_generated_files.sh` in this skill implements exactly that; read it before writing your own.
+
+## Pushing safely: a checklist
+
+For a push into a paper other people are editing. Each step comes from a real push (section *From experience*
+explains the failures behind them).
+
+1. **Pull first, right before you copy anything in.** Coauthors' commits appear in bursts while they type; the
+   project can move several times within an hour.
+2. **Know what you are replacing.** Before copying a regenerated file over the clone's copy, check that your
+   *previous* local output is byte-identical to what is on Overleaf now (`cmp`). If it is not, someone changed
+   the file on Overleaf, or your old output was never uploaded, and you would silently overwrite their version.
+3. **Touch only files you own**: generated tables/figures, and support files your build maintains (a macros or
+   preamble snippet file). Never push the main `.tex` or anything a coauthor writes in: put suggested prose
+   edits in your message or report instead, and let them make the change in the editor.
+4. **Stage by name and look at the result**: `git add <paths>`, then `git status --short` and
+   `git diff --cached --stat`. The list must be exactly the files you meant.
+5. **Compile a scratch copy before pushing.** `rsync -a --delete --exclude .git clone/ /tmp/check/`, run
+   `latexmk -pdf` there, and check the result, not just your file:
+   - `pdftotext -layout paper.pdf - | grep` for the strings that should now appear, **and for the ones that
+     should be gone**. A leftover may sit in a figure someone else made (`pdftotext` on the included PDFs finds it);
+     report it to its owner rather than editing their file.
+   - Read float numbers from the `.aux` (`\newlabel{tab_x}{{2}{42}...}`) so your message says "Table 2" the way
+     the compiled paper numbers it, not the way you remember it.
+6. **Commit with a message that says what changed and why** (and who asked). Push to `main`. If the push is
+   rejected because someone is typing, `git pull --rebase` and push again (see the retry loop in the sync script).
+7. **Record the commit hash** of the pushed version (and of the version you replaced). "Old = commit abc, new =
+   commit def" is the cleanest way to tell coauthors what they are looking at.
+
+### Macros: the first definition wins
+
+A generated table often carries fallback definitions so it compiles on its own:
+`\providecommand{\scoreName}{...}` at the top of `tab_main.tex`. `\providecommand` does nothing if the macro already
+exists, and the paper's preamble (or a preamble snippet it `\input`s) is read first. So to rename a label that
+appears through a macro, **change the definition the paper actually loads first**, then the fallback too.
+Changing only the fallback in the table file pushes cleanly and changes nothing on the page. Step 5 catches this.
+
+The upside: a label used through a macro in table notes, subcaptions and several tables changes everywhere with
+one edit, and the main `.tex` never has to be touched.
 
 ## Advanced operations
 
@@ -147,6 +191,8 @@ The main document should sit in the project root. In a folder, jump-to-location,
 | `failed to push some refs` after a rejection notice | Someone is editing on Overleaf: `git pull --rebase origin main` then push again (see below) |
 | `failed to push some refs`, no remote movement | Plan file-size/count limits, or an unsupported file (symlink, LFS). Check what the commit adds |
 | Push hangs or times out | Large commit. Split it, and raise the buffer: `git config --global http.postBuffer 10485760` |
+| `remote: error: wrong branch` / `You can't push any new branches. Please use the main branch.` | You pushed to a branch other than `main` (e.g. `HEAD:master`). Push `HEAD:main` |
+| Pushed a renamed label but the PDF still shows the old one | The macro is defined earlier (preamble or snippet) and your file's `\providecommand` is ignored. See *Macros: the first definition wins* |
 
 ## From experience (not in the Overleaf docs)
 
@@ -162,6 +208,12 @@ The main document should sit in the project root. In a folder, jump-to-location,
   When it matters, look in the editor.
 - **Announce renames.** Because a rename is delete + create, do them in the editor and tell the others, or the next
   person's pull will look like the file vanished.
+- **The rejected-while-typing push is routine, not an error.** In a project with active coauthors, expect the first
+  push to fail and the rebase-and-retry to succeed. A commit that touches only generated files rebased cleanly
+  every time.
+- **Clone once, reuse the clone.** Keep one clone (e.g. `~/src/overleaf/<paper>`) and `git pull` it before each use:
+  it is also a free, read-only way to check which version of each table and figure the live paper includes
+  (`cmp` your outputs against it).
 - **A pushed figure that still looks old is usually Overleaf's image cache** (the compiler setting "Optimise images"
   reuses already-processed PNGs). Recompile; if it persists, use "Clear cached files" at the bottom of the logs panel.
 - **When a number in the prose comes from your data**, consider writing it as a macro that the build regenerates
